@@ -4,9 +4,11 @@ After=network.target
 Requires=eclus.socket
 
 [Service]
-Type=simple
+Type=dbus
 User=eclus
 Group=eclus
+BusName=org.goerlang.Eclus
+BusName=org.erlang.Epmd
 WorkingDirectory=/run/eclus
 DeviceAllow=/dev/null rw
 PrivateTmp=true

@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"time"
 	"github.com/coreos/go-systemd/activation"
+	"github.com/guelfey/go.dbus"
 )
 
 var noEpmd bool
@@ -20,6 +21,8 @@ var listenPort string
 var regLimit int
 var unregTTL int
 var cpuProfile string
+var isDbus bool
+var isDbusSystemWide bool
 
 func init() {
 	flag.StringVar(&listenPort, "port", "4369", "listen port")
@@ -27,6 +30,8 @@ func init() {
 	flag.IntVar(&regLimit, "nodes-limit", 1000, "limit size of registration table to prune unregistered nodes")
 	flag.IntVar(&unregTTL, "unreg-ttl", 10, "prune unregistered nodes if unregistration older than this value in minutes")
 	flag.StringVar(&cpuProfile, "profile-cpu", "", "profile CPU to file")
+	flag.BoolVar(&isDbus, "dbus", false, "Enable D-Bus")
+	flag.BoolVar(&isDbusSystemWide, "dbus-system", true, "Enable D-Bus system-wide")
 }
 
 type regAns struct {
@@ -75,6 +80,32 @@ func main() {
 				// Cannot bind, eclus instance already running, connect to it
 				eclusCli()
 			} else {
+				// Register at D-BUS here
+				if isDbus {
+					var dconn *dbus.Conn
+					var visibility string
+					if isDbusSystemWide {
+						dconn, err = dbus.SystemBus()
+						visibility = "system-wide"
+					} else {
+						dconn, err = dbus.SessionBus()
+						visibility = "local/session"
+					}
+					if err == nil {
+						for _, name := range []string{"org.goerlang.Eclus", "org.erlang.Epmd"} {
+							log.Printf("Registering at D-Bus: %s (%s)", name, visibility)
+							reply, err := dconn.RequestName(name, dbus.NameFlagDoNotQueue)
+							if reply != dbus.RequestNameReplyPrimaryOwner {
+								// Shall we continue as is instead?
+								log.Fatal("Registering at D-Bus: %s name failed. Aready taken,  %+v,  %+v", name, reply, err)
+							}
+							if err != nil {
+								log.Fatal("Registering at D-Bus: %s name failed. Other error, %+v,  %+v", name, reply, err)
+							}
+						}
+					}
+				}
+
 				epm := make(chan regReq, 10)
 				go epmReg(epm)
 				go func() {
