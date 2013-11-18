@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"encoding/binary"
 	"flag"
+	"github.com/coreos/go-systemd/activation"
 	"github.com/goerlang/epmd"
+	"github.com/guelfey/go.dbus"
 	"log"
 	"net"
 	"os"
@@ -12,8 +14,6 @@ import (
 	"runtime/pprof"
 	"strconv"
 	"time"
-	"github.com/coreos/go-systemd/activation"
-	"github.com/guelfey/go.dbus"
 )
 
 var noEpmd bool
@@ -23,6 +23,7 @@ var unregTTL int
 var cpuProfile string
 var isDbus bool
 var isDbusSystemWide bool
+var dconn *dbus.Conn
 
 func init() {
 	flag.StringVar(&listenPort, "port", "4369", "listen port")
@@ -82,28 +83,8 @@ func main() {
 			} else {
 				// Register at D-BUS here
 				if isDbus {
-					var dconn *dbus.Conn
-					var visibility string
-					if isDbusSystemWide {
-						dconn, err = dbus.SystemBus()
-						visibility = "system-wide"
-					} else {
-						dconn, err = dbus.SessionBus()
-						visibility = "local/session"
-					}
-					if err == nil {
-						for _, name := range []string{"org.goerlang.Eclus", "org.erlang.Epmd"} {
-							log.Printf("Registering at D-Bus: %s (%s)", name, visibility)
-							reply, err := dconn.RequestName(name, dbus.NameFlagDoNotQueue)
-							if reply != dbus.RequestNameReplyPrimaryOwner {
-								// Shall we continue as is instead?
-								log.Fatal("Registering at D-Bus: %s name failed. Aready taken,  %+v,  %+v", name, reply, err)
-							}
-							if err != nil {
-								log.Fatal("Registering at D-Bus: %s name failed. Other error, %+v,  %+v", name, reply, err)
-							}
-						}
-					}
+					dconn = dbusConnect(isDbusSystemWide)
+					avahiRegister(dconn, "epmd", "", 4369)
 				}
 
 				epm := make(chan regReq, 10)
@@ -135,6 +116,7 @@ type nodeRec struct {
 	Time   time.Time
 	Active bool
 	conn   net.Conn
+	Dconn *dbus.Object
 }
 
 func epmReg(in <-chan regReq) {
@@ -150,6 +132,7 @@ func epmReg(in <-chan regReq) {
 
 				for node, rec := range nReg {
 					if rec.conn == req.conn {
+						avahiUnregister(nReg[node].Dconn)
 						log.Printf("Connection for %s dropped", node)
 						nReg[node].Active = false
 						nReg[node].Time = now
@@ -178,6 +161,7 @@ func epmReg(in <-chan regReq) {
 					} else {
 						log.Printf("Node %s is not running", nInfo.Name)
 						rec.conn = nConn
+						rec.Dconn = avahiRegister(dconn, nInfo.Name, "", nInfo.Port)
 
 						nInfo.Creation = (rec.Creation % 3) + 1
 						rec.NodeInfo = nInfo
@@ -192,6 +176,7 @@ func epmReg(in <-chan regReq) {
 						conn:     nConn,
 						Time:     time.Now(),
 						Active:   true,
+						Dconn: avahiRegister(dconn, nInfo.Name, "", nInfo.Port),
 					}
 					nReg[nInfo.Name] = rec
 					reply = epmd.Compose_ALIVE2_RESP(true, rec.NodeInfo)
